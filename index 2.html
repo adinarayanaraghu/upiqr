@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D UPI QR Scanner</title>
+  <!-- Google Font -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet" />
+  <!-- jsQR for scanning -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.js"></script>
+  <!-- QR generator -->
+  <script src="https://cdn.jsdelivr.net/npm/qrious/dist/qrious.min.js"></script>
+  <!-- Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
+  <style>
+    :root {
+      --primary: #4f46e5;
+      --accent: #ec4899;
+      --bg: #1a1a1a;
+      --text: #e5e7eb;
+      --radius: 16px;
+      --shadow: rgba(0, 0, 0, 0.5);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      width: 100%; height: 100%; overflow: hidden;
+      font-family: 'Inter', sans-serif;
+      background: var(--bg); color: var(--text);
+    }
+    .scene {
+      width: 100vw; height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      perspective: 1000px;
+    }
+    .card {
+      width: 90vw; max-width: 380px; height: 85vh;
+      background: #111; border-radius: var(--radius);
+      box-shadow: 0 20px 40px var(--shadow);
+      transform-style: preserve-3d;
+      transition: transform 0.2s ease;
+      padding: 1.5rem;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: space-between;
+    }
+    .card:hover { transform: rotateY(10deg) rotateX(5deg) translateZ(20px); }
+    h1 { font-size: 1.5rem; margin: 0; }
+    video {
+      width: 100%; max-height: 40%; border-radius: 8px;
+      background: #000; transform: translateZ(40px);
+      box-shadow: 0 10px 30px var(--shadow);
+    }
+    canvas#qrCanvas {
+      display: none;
+      width: 200px; height: 200px;
+      margin-top: 1rem;
+      transform: translateZ(20px);
+    }
+    .payment {
+      width: 100%; display: none;
+      flex-direction: column; gap: 1rem;
+      transform: translateZ(20px);
+      text-align: center;
+    }
+    .payment.active { display: flex; }
+    .payment div, .payment label { font-size: 1rem; }
+    .input-group {
+      display: flex; align-items: center;
+      justify-content: center; gap: 0.5rem;
+    }
+    .input-group input {
+      width: 80px; padding: 0.5rem;
+      border: none; border-radius: 8px;
+      font-size: 1rem; color: var(--bg);
+      background: var(--text);
+    }
+    .actions {
+      display: flex; gap: 0.5rem; width: 100%;
+    }
+    .btn {
+      flex: 1; padding: 0.75rem;
+      font-size: 1rem; font-weight: 600;
+      border-radius: 8px; border: none;
+      cursor: pointer;
+      transition: transform 0.2s, opacity 0.2s;
+      transform: translateZ(20px);
+    }
+    .btn.primary { background: var(--primary); color: #fff; }
+    .btn.secondary { background: transparent; color: var(--primary); border: 2px solid var(--primary); }
+    .btn:disabled { opacity: 0.5; cursor: default; }
+    .btn:hover:not(:disabled) { transform: translateZ(30px) scale(1.02); }
+  </style>
+</head>
+<body>
+  <div class="scene">
+    <div class="card" id="card">
+      <h1>3D UPI QR Scanner</h1>
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="canvas" hidden></canvas>
+      <div class="payment" id="payment">
+        <div><strong>UPI:</strong> <span id="upiId"></span></div>
+        <div class="input-group">
+          <label for="amount">₹</label>
+          <input id="amount" type="number" min="1" placeholder="0" />
+        </div>
+        <canvas id="qrCanvas"></canvas>
+        <div class="actions">
+          <button class="btn primary" id="shareBtn" disabled>Share</button>
+          <button class="btn secondary" id="downloadBtn" disabled>Download QR</button>
+          <button class="btn secondary" id="rescanBtn">Rescan</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script>
+    let stream, qr;
+    const card = document.getElementById('card');
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const paymentEl = document.getElementById('payment');
+    const upiIdEl = document.getElementById('upiId');
+    const amountInput = document.getElementById('amount');
+    const shareBtn = document.getElementById('shareBtn');
+    const rescanBtn = document.getElementById('rescanBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const qrCanvas = document.getElementById('qrCanvas');
+
+    document.addEventListener('mousemove', e => {
+      const x = (window.innerWidth/2 - e.pageX)/20;
+      const y = (window.innerHeight/2 - e.pageY)/20;
+      card.style.transform = `rotateY(${x}deg) rotateX(${y}deg)`;
+    });
+
+    function startScanner() {
+      paymentEl.classList.remove('active');
+      upiIdEl.textContent = '';
+      amountInput.value = '';
+      shareBtn.disabled = true;
+      downloadBtn.disabled = true;
+      qrCanvas.style.display = 'none';
+
+      navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+        .then(s => { stream = s; video.srcObject = s; requestAnimationFrame(scanFrame); })
+        .catch(console.error);
+    }
+
+    function scanFrame() {
+      if(video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+        ctx.drawImage(video,0,0);
+        const img = ctx.getImageData(0,0,canvas.width,canvas.height);
+        const code = jsQR(img.data,img.width,img.height);
+        if(code) return handleUPI(code.data);
+      }
+      requestAnimationFrame(scanFrame);
+    }
+
+    function handleUPI(data) {
+      let upi = data;
+      if(data.startsWith('upi://')) {
+        try { upi = new URL(data).searchParams.get('pa')||data; }catch{}
+      }
+      if(!upi.includes('@')) return;
+      stream.getTracks().forEach(t=>t.stop());
+      upiIdEl.textContent = upi;
+      paymentEl.classList.add('active');
+      qr = new QRious({ element: qrCanvas, size: 200, value: '' });
+      confetti({ particleCount:100, spread:120 });
+    }
+
+    amountInput.addEventListener('input', () => {
+      if(amountInput.value && upiIdEl.textContent) {
+        video.style.display = 'none';
+        const val = amountInput.value;
+        const value = `upi://pay?pa=${upiIdEl.textContent}&am=${val}&cu=INR`;
+        qr.set({ value });
+        qrCanvas.style.display = 'block';
+        shareBtn.disabled = false;
+        downloadBtn.disabled = false;
+      } else {
+        video.style.display = 'block';
+        qrCanvas.style.display = 'none';
+        shareBtn.disabled = true;
+        downloadBtn.disabled = true;
+      }
+    });
+
+    shareBtn.addEventListener('click', () => {
+      const text = `Hi! Could you please transfer ₹${amountInput.value} to ${upiIdEl.textContent} and send me a screenshot once it’s done? Thanks!`;
+      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.href = qrCanvas.toDataURL('image/png');
+      link.download = 'upi_qr.png';
+      link.click();
+    });
+
+    rescanBtn.addEventListener('click', () => {
+      video.style.display = 'block'; startScanner();
+    });
+
+    startScanner();
+  </script>
+</body>
+</html>
